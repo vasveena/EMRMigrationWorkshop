@@ -32,57 +32,71 @@ Mappings:
       HVM64: ami-0cb72367e98845d43
 Resources:
   cluster:
-    Type: AWS::EMR::Cluster
-    DependsOn: KafkaClientEC2Instance
-    Properties:
-      AdditionalMasterSecurityGroups: 
-        - !GetAtt
-            - MSKSecurityGroup
-            - GroupId
-        - !GetAtt
-            - KafkaClientInstanceSecurityGroup
-            - GroupId
-      AdditionalSlaveSecurityGroups: 
-        - !GetAtt
-            - MSKSecurityGroup
-            - GroupId
-        - !GetAtt
-            - KafkaClientInstanceSecurityGroup
-            - GroupId
-      Applications: 
-        - Hive
-        - Spark
-        - Presto
-        - Hue
-        - Ganglia
-        - JupyterEnterpriseGateway
-        - Livy
-      EbsRootVolumeSize: 80
-      Instances:
-        MasterInstanceGroup:
-          InstanceCount: 1
-          InstanceType: m4.4xlarge
-          Market: ON_DEMAND
-          Name: cfnMaster
-        CoreInstanceGroup:
-          InstanceCount: 2
-          InstanceType: m4.8xlarge
-          Market: ON_DEMAND
-          Name: cfnCore
-        TerminationProtected: 'true'
-        Ec2SubnetId: !Ref PublicSubnetOne
+      Type: AWS::EMR::Cluster
+      DependsOn: PrivateWaitCondition
+      Properties:
+        Applications: 
+          - Name: 'Hadoop'
+          - Name: 'Hive'
+          - Name: 'JupyterEnterpriseGateway'
+          - Name: 'Livy'
+          - Name: 'Presto'
+          - Name: 'Spark'
+          - Name: 'Hue'
+          - Name: 'Ganglia'
+        EbsRootVolumeSize: 80
+        Instances:
+          Ec2KeyName: !Ref KeyName
+          AdditionalMasterSecurityGroups:
+            - !GetAtt
+               - MSKSecurityGroup
+               - GroupId
+            - !GetAtt
+               - KafkaClientInstanceSecurityGroup
+               - GroupId
+          AdditionalSlaveSecurityGroups:
+            - !GetAtt
+               - MSKSecurityGroup
+               - GroupId
+            - !GetAtt
+               - KafkaClientInstanceSecurityGroup
+               - GroupId 
+          MasterInstanceFleet:
+            InstanceTypeConfigs: 
+               - InstanceType: m5.4xlarge
+               - InstanceType: m4.4xlarge
+               - InstanceType: c5.4xlarge
+               - InstanceType: r5.4xlarge
+               - InstanceType: r4.4xlarge
+            Name: cfnMaster
+            TargetOnDemandCapacity: 1
+          CoreInstanceFleet:
+            InstanceTypeConfigs:
+               - InstanceType: m5.4xlarge
+               - InstanceType: r4.4xlarge
+               - InstanceType: c5.4xlarge
+               - InstanceType: m4.4xlarge
+               - InstanceType: r5.4xlarge
+            Name: cfnCore
+            TargetOnDemandCapacity: 2
+          TerminationProtected: 'false'
+          Ec2SubnetId: !Ref PublicSubnetOne
         BootstrapActions: 
-          Name: 'Setup SSM Agent'
-          ScriptBootstrapAction: 
-              - Path: !Sub 's3://emr-workshop-${AWS::AccountId}-${AWS::StackName}/bootstrap/ssm-agent.sh'
-      Name: CFNtest
-      JobFlowRole: !Ref emrEc2InstanceProfile
-      ServiceRole: !Ref emrRole
-      ReleaseLabel: emr-6.4.0
-      VisibleToAllUsers: true
-      Tags:
-        - Key: Name
-          Value: EMR-Lab
+           - Name: 'Setup SSM Agent'
+             ScriptBootstrapAction: 
+               Path: !Join [ '', [ 's3://', !Ref S3Bucket, '/bootstrap/ssm-agent.sh' ] ]
+               Args:
+                - !Ref S3Bucket
+        Name: Workshop
+        JobFlowRole: !Ref emrEc2InstanceProfile
+        ServiceRole: !Ref emrRole
+        ReleaseLabel: emr-6.4.0
+        StepConcurrencyLevel: 10
+        VisibleToAllUsers: true
+        LogUri: !Join [ '', [ 's3n://', !Ref S3Bucket, '/emr/logs/' ] ]
+        Tags:
+          - Key: Name
+            Value: EMR-Lab
   emrRole:
     Type: AWS::IAM::Role
     Properties:
@@ -119,7 +133,6 @@ Resources:
         - !Ref emrEc2Role
   S3Bucket:
     Type: 'AWS::S3::Bucket'
-    DeletionPolicy: Retain
     Properties:
       BucketName: !Sub 'emr-workshop-${AWS::AccountId}-${AWS::StackName}'
   VPC:
@@ -305,12 +318,10 @@ Resources:
         - HVM64
       Tags:
         - Key: Name
-          Value: KafkaClientInstance
+          Value: JumpHost
       UserData: 
-        Fn::Base64:
-          Fn::Sub:
-            - |
-              #!/bin/bash
+        Fn::Base64: !Sub |
+              #!/bin/bash -x
 
               yum update -y 
 
@@ -328,7 +339,9 @@ Resources:
 
               curl -o ssm-agent.sh https://raw.githubusercontent.com/vasveena/EMRMigrationWorkshop/main/bootstrap/ssm-agent.sh
 
-              echo "aws s3 cp ssm-agent.sh s3://${S3BucketName}/bootstrap/" | bash  	
+              bucketName=`aws s3api list-buckets --query "Buckets[].Name" | grep emr-workshop | sed 's/"//' | sed 's/,//' | sed 's/"//' | sed 's/    //' | sed 's/ //'`
+
+              aws s3 cp ssm-agent.sh s3://emr-workshop-${AWS::AccountId}-${AWS::StackName}/bootstrap/ssm-agent.sh
 
               echo "export PATH=.local/bin:$PATH" >> .bash_profile
 
@@ -353,22 +366,22 @@ Resources:
 
               su -c "/home/ec2-user/.local/bin/pip3 install awscli --user" -s /bin/sh
               ec2-user
-  
+
               su -c "/home/ec2-user/.local/bin/pip3 install protobuf --user" -s /bin/sh
               ec2-user
-        
+
               su -c "/home/ec2-user/.local/bin/pip3 install requests --user" -s /bin/sh
               ec2-user
-        
+
               su -c "/home/ec2-user/.local/bin/pip3 install kafka-python --user" -s /bin/sh
               ec2-user
-        
+
               su -c "/home/ec2-user/.local/bin/pip3 install --upgrade gtfs-realtime-bindings --user" -s /bin/sh
               ec2-user
-        
+
               su -c "/home/ec2-user/.local/bin/pip3 install underground --user" -s /bin/sh
               ec2-user
-        
+
               su -c "/home/ec2-user/.local/bin/pip3 install pathlib --user" -s /bin/sh
               ec2-user
 
@@ -381,7 +394,8 @@ Resources:
               chgrp -R ec2-user ./mm
 
               echo 'security.protocol=SSL' > /home/ec2-user/kafka.properties
-            - S3BucketName: !Ref S3Bucket
+
+              /opt/aws/bin/cfn-signal -e $? -d "User Data" -r "Build Process Complete" '${PrivateWaitHandle}'
   EC2Role:
     Type: 'AWS::IAM::Role'
     Properties:
@@ -419,13 +433,21 @@ Resources:
           EBSStorageInfo:
             VolumeSize: 2000
       ClusterName: MSKCluster
-      EnhancedMonitoring: PER_TOPIC_PER_BROKER
       EncryptionInfo:
         EncryptionInTransit:
           ClientBroker: TLS_PLAINTEXT
           InCluster: false
       KafkaVersion: 2.2.1
       NumberOfBrokerNodes: 3
+  PrivateWaitHandle:
+      Type: AWS::CloudFormation::WaitConditionHandle
+  PrivateWaitCondition:
+      DependsOn: KafkaClientEC2Instance
+      Type: AWS::CloudFormation::WaitCondition
+      Properties:
+        Handle: !Ref PrivateWaitHandle
+        Timeout: '600'
+        Count: 1
 Outputs:
   VPCId:
     Description: The ID of the VPC created
